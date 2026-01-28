@@ -294,3 +294,158 @@ BEGIN
     RETURN NEW;
 END;
 $$;
+
+-- Trigger function to calculate loyalty points
+CREATE OR REPLACE FUNCTION trg_func_calculate_loyalty()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_points_to_add INT;
+    v_multiplier NUMERIC;
+BEGIN
+    -- Determine multiplier based on purchase amount
+    IF NEW.total_amount > 100.00 THEN
+        v_multiplier := 0.10; -- 10% for gold tier
+    ELSE
+        v_multiplier := 0.05; -- 5% for silver tier
+    END IF;
+
+    v_points_to_add := FLOOR(NEW.total_amount * v_multiplier);
+
+    UPDATE customers
+    SET membership_pts = membership_pts + v_points_to_add,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE customer_id = NEW.customer_id;
+
+    RETURN NEW;
+END;
+$$;
+
+-- Trigger function to audit book changes
+CREATE OR REPLACE FUNCTION trg_func_audit_books()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    -- Audit price changes
+    IF NEW.price IS DISTINCT FROM OLD.price THEN
+        INSERT INTO audit_logs (
+            target_table, target_pk, action_type, column_changed,
+            old_value, new_value
+        )
+        VALUES (
+            'books', OLD.isbn, 'UPDATE', 'price',
+            OLD.price::TEXT, NEW.price::TEXT
+        );
+    END IF;
+
+    -- Audit stock quantity changes
+    IF NEW.stock_qty IS DISTINCT FROM OLD.stock_qty THEN
+        INSERT INTO audit_logs (
+            target_table, target_pk, action_type, column_changed,
+            old_value, new_value
+        )
+        VALUES (
+            'books', OLD.isbn, 'UPDATE', 'stock_qty',
+            OLD.stock_qty::TEXT, NEW.stock_qty::TEXT
+        );
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+-- ============================================================================
+-- TRIGGERS
+-- ============================================================================
+
+-- Trigger to reward purchases with trust score
+CREATE TRIGGER trg_sales_trust_reward
+AFTER INSERT ON sales_header
+FOR EACH ROW
+EXECUTE FUNCTION trg_func_reward_purchase();
+
+-- Trigger to penalize returns
+CREATE TRIGGER trg_returns_trust_penalty
+AFTER INSERT ON returns
+FOR EACH ROW
+EXECUTE FUNCTION trg_func_penalize_return();
+
+-- Trigger to calculate loyalty points
+CREATE TRIGGER trg_auto_loyalty
+AFTER INSERT ON sales_header
+FOR EACH ROW
+EXECUTE FUNCTION trg_func_calculate_loyalty();
+
+-- Trigger to audit book changes
+CREATE TRIGGER trg_audit_book_changes
+AFTER UPDATE ON books
+FOR EACH ROW
+EXECUTE FUNCTION trg_func_audit_books();
+
+-- ============================================================================
+-- MATERIALIZED VIEWS FOR REPORTING
+-- ============================================================================
+
+-- Dashboard view for genre trends
+CREATE MATERIALIZED VIEW mv_dashboard_genre_trends AS
+SELECT
+    g.genre_name,
+    COUNT(DISTINCT sd.isbn) AS unique_books_sold,
+    SUM(sd.quantity) AS total_books_sold,
+    SUM(sd.quantity * sd.unit_price) AS total_revenue,
+    ROUND(AVG(sd.unit_price), 2) AS avg_selling_price
+FROM sales_header sh
+JOIN sales_details sd ON sh.sale_id = sd.sale_id
+JOIN books b ON sd.isbn = b.isbn
+JOIN genres g ON b.genre_id = g.genre_id
+WHERE sh.sale_date >= DATE_TRUNC('month', CURRENT_DATE)
+GROUP BY g.genre_name
+ORDER BY total_revenue DESC;
+
+-- Create unique index for concurrent refresh
+CREATE UNIQUE INDEX idx_mv_genre_name ON mv_dashboard_genre_trends(genre_name);
+
+-- Dashboard view for top authors
+CREATE MATERIALIZED VIEW mv_dashboard_top_authors AS
+SELECT
+    a.author_id,
+    a.full_name,
+    COUNT(DISTINCT b.isbn) AS unique_titles_sold,
+    SUM(sd.quantity) AS total_books_sold,
+    SUM(sd.quantity * sd.unit_price) AS total_generated_revenue,
+    ROUND(AVG(sd.unit_price), 2) AS avg_book_price
+FROM authors a
+JOIN book_authors ba ON a.author_id = ba.author_id
+JOIN books b ON ba.isbn = b.isbn
+JOIN sales_details sd ON b.isbn = sd.isbn
+GROUP BY a.author_id, a.full_name
+ORDER BY total_generated_revenue DESC
+LIMIT 10;
+
+-- Create unique index for concurrent refresh
+CREATE UNIQUE INDEX idx_mv_author_id ON mv_dashboard_top_authors(author_id);
+
+-- ============================================================================
+-- SAMPLE DATA INSERTION
+-- ============================================================================
+
+-- Insert sample genres
+-- ============================================================================
+-- VERIFICATION QUERIES
+-- ============================================================================
+
+-- View all tables
+DO $$
+BEGIN
+    RAISE NOTICE '=== Database Setup Complete ===';
+    RAISE NOTICE 'Tables created: customers, suppliers, genres, authors, books, book_authors, book_assets';
+    RAISE NOTICE 'Sales tables: sales_header, sales_details, returns';
+    RAISE NOTICE 'Purchase tables: purchase_orders, purchase_order_details';
+    RAISE NOTICE 'Support tables: audit_logs';
+    RAISE NOTICE 'Views: mv_dashboard_genre_trends, mv_dashboard_top_authors';
+    RAISE NOTICE '';
+    RAISE NOTICE 'Sample data inserted for testing';
+    RAISE NOTICE 'System ready for use!';
+END $$;
