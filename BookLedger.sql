@@ -1,4 +1,5 @@
 -- Drop triggers first
+-- Triggers depend on tables, so they must be removed before dropping tables
 DROP TRIGGER IF EXISTS trg_sales_trust_reward ON sales_header CASCADE;
 DROP TRIGGER IF EXISTS trg_returns_trust_penalty ON returns CASCADE;
 DROP TRIGGER IF EXISTS trg_auto_loyalty ON sales_header CASCADE;
