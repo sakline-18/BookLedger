@@ -689,6 +689,32 @@ AFTER UPDATE ON books
 FOR EACH ROW
 EXECUTE FUNCTION trg_func_audit_books();
 
+-- Feature: Dead Stock Discounter (Dynamic Pricing)
+-- Logic: If a book hasn't sold in 90 days, cut price by 10%
+CREATE OR REPLACE PROCEDURE proc_discount_dead_stock()
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_count INT := 0;
+BEGIN
+    -- Update books that haven't appeared in sales_details for 90 days
+    -- AND haven't been updated recently (to prevent double discounting)
+    UPDATE books b
+    SET price = price * 0.90, -- 10% Discount
+        updated_at = CURRENT_TIMESTAMP
+    WHERE NOT EXISTS (
+        SELECT 1 FROM sales_details sd 
+        JOIN sales_header sh ON sd.sale_id = sh.sale_id
+        WHERE sd.isbn = b.isbn 
+        AND sh.sale_date > CURRENT_DATE - INTERVAL '90 days'
+    )
+    AND b.updated_at < CURRENT_DATE - INTERVAL '30 days'; -- Don't discount if we just touched it
+    
+    GET DIAGNOSTICS v_count = ROW_COUNT;
+    RAISE NOTICE 'Applied Dead Stock discount to % books.', v_count;
+END;
+$$;
+
 -- ============================================================================
 -- MATERIALIZED VIEWS FOR REPORTING
 -- ============================================================================
